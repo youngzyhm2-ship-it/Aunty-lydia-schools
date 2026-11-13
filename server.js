@@ -165,9 +165,22 @@ const IMG_DATA = /^data:image\/(jpeg|png|webp);base64,([A-Za-z0-9+/=]+)$/;
 const IMG_PATH = /^\/?(uploads|images)\/[\w.\-]+$/;
 const img = v => { v = typeof v === 'string' ? v.trim() : ''; return IMG_DATA.test(v) || IMG_PATH.test(v) || /^https?:\/\/\S{1,500}$/i.test(v) ? v : ''; };
 
+const EDITABLE_PAGES = ['index','about','academics','admissions','fees','gallery','news','staff','sponsor','contact'].map(page => page + '.html');
+function sanitizePageEdits(pages) {
+  const result = {};
+  for (const page of EDITABLE_PAGES) {
+    const entries = Object.entries(pages?.[page] || {}).slice(0, 500);
+    result[page] = Object.fromEntries(entries.filter(([key, edit]) => key.length <= 175 && /^(text|image):/.test(key) && ['text','image'].includes(edit?.kind) && key.startsWith(edit.kind + ':'))
+      .map(([key, edit]) => [key, { kind: edit.kind, value: edit.kind === 'image' ? img(edit.value) : str(edit.value, 5000) }])
+      .filter(([, edit]) => edit.kind !== 'image' || edit.value));
+  }
+  return result;
+}
+const pageImages = content => Object.values(content.pageEdits || {}).flatMap(page => Object.values(page)).filter(edit => edit.kind === 'image');
 function sanitizeContent(c) {
   c = c && typeof c === 'object' ? c : {};
   const s = c.settings || {}, a = c.announcement || {}, f = c.fees || {};
+  const leader = value => ({ name: str(value.name, 120), title: str(value.title, 160), message: str(value.message, 5000), photo: img(value.photo) });
   const settings = {};
   ['phone', 'phone2', 'email', 'address', 'motto'].forEach(k => settings[k] = str(s[k], 300));
   settings.whatsapp = str(s.whatsapp, 20).replace(/\D/g, '');
@@ -175,6 +188,10 @@ function sanitizeContent(c) {
   settings.popup = !!s.popup;
   return {
     settings,
+    pageEdits: sanitizePageEdits(c.pageEdits),
+    ...(c.proprietress && { proprietress: leader(c.proprietress) }),
+    ...(c.chairman && { chairman: leader(c.chairman) }),
+    ...(c.admissions && { admissions: { artwork: img(c.admissions.artwork) } }),
     announcement: { on: !!a.on && !!str(a.text, 160), text: str(a.text, 160), link: safeLink(a.link) },
     news: arr(c.news).map(n => ({ id: id(n.id, 'n'), title: str(n.title, 200), cat: str(n.cat, 40), date: str(n.date, 10), img: img(n.img), body: str(n.body, 5000) })),
     events: arr(c.events).map(e => ({ id: id(e.id, 'e'), date: str(e.date, 60), title: str(e.title, 200), venue: str(e.venue, 200) })),
@@ -208,11 +225,13 @@ function saveDataUrl(v) {
 function persistImages(c) {
   c.news.forEach(n => n.img = saveDataUrl(n.img));
   c.gallery.forEach(g => g.img = saveDataUrl(g.img));
+  for (const [record, key] of [[c.proprietress, "photo"], [c.chairman, "photo"], [c.admissions, "artwork"]]) if (record) record[key] = saveDataUrl(record[key]);
+  for (const edit of pageImages(c)) edit.value = saveDataUrl(edit.value);
   c.staff.forEach(m => m.photo = saveDataUrl(m.photo));
 }
 function cleanOrphans(c) {
   const used = new Set();
-  [...c.news.map(n => n.img), ...c.gallery.map(g => g.img), ...c.staff.map(m => m.photo)].forEach(p => { if (p && /uploads\//.test(p)) used.add(path.basename(p)); });
+  [...pageImages(c).map(edit => edit.value), c.proprietress?.photo, c.chairman?.photo, c.admissions?.artwork, ...c.news.map(n => n.img), ...c.gallery.map(g => g.img), ...c.staff.map(m => m.photo)].forEach(p => { if (p && /uploads\//.test(p)) used.add(path.basename(p)); });
   for (const f of fs.readdirSync(UPLOAD_DIR)) if (!used.has(f)) fs.rmSync(path.join(UPLOAD_DIR, f), { force: true });
 }
 const getContent = () => { const r = q.getKV.get('content'); return r ? JSON.parse(r.value) : null; };
@@ -389,3 +408,4 @@ if (require.main === module) {
   process.on('SIGINT', stop); process.on('SIGTERM', stop);
 }
 module.exports = { server };
+
